@@ -40,13 +40,58 @@ The resulting force is:
 
 For now, particle masses are set to unity.
 
+### Interparticle Interactions
+
+Particles interact through a short-range repulsive force, modeled as a linear elastic contact.
+
+For two particles \(i\) and \(j\), the separation vector and distance are defined as:
+
+\[
+\mathbf d_{ij}=\mathbf r_i-\mathbf r_j,
+\qquad
+d_{ij}=|\mathbf d_{ij}|
+\]
+
+The interaction force is:
+
+\[
+\mathbf F_{ij}=
+\begin{cases}
+k(d_0-d_{ij})\dfrac{\mathbf d_{ij}}{d_{ij}}, & 0<d_{ij}<d_0\\
+0, & \text{otherwise}
+\end{cases}
+\]
+
+where:
+
+- \(k\) is the interaction stiffness.
+- \(d_0\) is the effective contact distance.
+
+The total force acting on each particle is:
+
+\[
+\mathbf F_i=\mathbf F_{\mathrm{central},i}+\sum_{j\ne i}\mathbf F_{ij}
+\]
+
+Pairwise interactions are computed using NumPy broadcasting, allowing all particle separations and forces to be evaluated without explicit Python loops.
+
+The resulting forces are integrated using the Velocity Verlet method.
+
 ### Observations
 
-The repulsive potential produces a low-density region around the center. Depending on their initial conditions, particles may be reflected away from the central region, penetrate it, or follow curved trajectories around it.
+Short-range interactions visibly modify particle trajectories when particles approach one another. Unlike the initial model, particles no longer move independently through the crowd.
 
-### Limitations
+### Current Limitations
 
-Particles currently do not interact with one another. There is no friction, self-propulsion, or collective alignment. Wall collisions are treated approximately.
+The particles are modeled as soft objects, meaning that some overlap remains possible. Contact forces are purely repulsive and do not yet include dissipative effects or tangential friction.
+
+The current implementation evaluates all particle pairs, resulting in \(O(N^2)\) computational complexity.
+
+### Future Improvements
+
+- Introduce different interaction parameters for active participants and spectators.
+- Investigate numerical stability and energy conservation.
+- Optimize interaction calculations for larger particle populations.
 
 ### Next Steps
 
