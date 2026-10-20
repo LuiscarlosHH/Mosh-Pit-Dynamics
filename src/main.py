@@ -3,9 +3,10 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 
-N=500
+N=200
 p=0.7
-R_wall = 12
+R_b = 12.0
+k_w = 10.0
 R_0=4
 sigma_v=1
 V0_E=25
@@ -22,6 +23,8 @@ beta=0.5
 R_a=1.5
 lambda_align=1
 dt = 0.05
+t_final = 100.0
+n_steps = round(t_final / dt)
 
 rng = np.random.default_rng()
 
@@ -41,9 +44,16 @@ gamma_particles = np.array([gamma_E, gamma_P])[types]
 
 u = rng.random(N)
 theta = rng.uniform(0, 2*np.pi, N)
-r = R_wall * np.sqrt(u)
+r = R_b * np.sqrt(u)
 positions = r[:,None]*np.column_stack((np.cos(theta),np.sin(theta)))
 velocities = rng.normal(0, sigma_v, size=(N, 2))
+
+def wall_force(positions, R_b, k_w):
+    r = np.linalg.norm(positions, axis=1)
+    limit = np.maximum(0, r - R_b)
+    safe_r = np.where(r > 0, r, 1.0)    
+    forces = -k_w*(limit/safe_r)[:, None]*positions
+    return forces
 
 def central_force(positions, V0_particles, sigma):
     r_squared = np.sum(positions**2, axis=1)
@@ -61,10 +71,11 @@ def interaction_force(positions, K, d0):
     forces = np.sum(pair_forces,axis=1)
     return forces
 
-def total_force(positions, V0, sigma, k, d0):
+def total_force(positions, R_b, k_w, V0, sigma, k, d0):
     return (
         central_force(positions, V0, sigma)
         + interaction_force(positions, k, d0)
+        + wall_force(positions, R_b, k_w)
     )
 
 def alignment_force(positions, velocities, types, R_a, lambda_align):
@@ -93,28 +104,34 @@ def update_active_velocities(
 
     velocities += dt * forces  
 
-def update(positions, velocities, types, gamma_particles, V0, sigma, k, d0, alpha, beta, R_a, lambda_align, dt):
+def update(positions, R_b, k_w,  velocities, types, gamma_particles, V0, sigma, k, d0, alpha, beta, R_a, lambda_align, dt):
     update_active_velocities(positions, velocities, types, gamma_particles, alpha, beta, R_a, lambda_align, dt/2)
-    accelerations = total_force(positions,V0,sigma,k,d0)
+    accelerations = total_force(positions, R_b, k_w, V0,sigma,k,d0)
     new_positions = positions + velocities * dt + accelerations/2*dt**2
-    forces = total_force(new_positions,V0,sigma,k,d0)
+    forces = total_force(new_positions, R_b, k_w, V0,sigma,k,d0)
     accelerations2 = forces
     velocities += (accelerations+accelerations2)/2*dt
 
-    r = np.linalg.norm(new_positions, axis=1)
-    mask_wall = r >= R_wall
-    normals = new_positions[mask_wall] / r[mask_wall, None]
-    normal_components = np.sum(
-    velocities[mask_wall] * normals,
-    axis=1)
-    velocities[mask_wall] -= 2 * normal_components[:, None] * normals
-    new_positions[mask_wall] *= (
-    (2 * R_wall - r[mask_wall]) / r[mask_wall]
-    )[:, None]
-
-    update_active_velocities(positions, velocities, types, gamma_particles, alpha, beta, R_a, lambda_align, dt/2)
+    update_active_velocities(new_positions, velocities, types, gamma_particles, alpha, beta, R_a, lambda_align, dt/2)
 
     positions[:] = new_positions
+
+def rotational_order(positions, velocities, types):
+    mask = types == 1
+    positions_P = positions[mask]
+    velocities_P = velocities[mask]
+    vec_prod = (
+    positions_P[:, 0] * velocities_P[:, 1]
+    - positions_P[:, 1] * velocities_P[:, 0])
+    r = np.linalg.norm(positions_P, axis=1)
+    v = np.linalg.norm(velocities_P, axis=1)
+    denominator = r * v
+    phi = np.zeros_like(denominator)
+    np.divide(vec_prod, denominator, out=phi, where=denominator > 0)
+    rot_ord = np.mean(phi)
+    return rot_ord
+
+rotational_history = []
 
 
 fig, ax = plt.subplots()
@@ -133,20 +150,86 @@ ax.legend(handles=[
     Line2D([], [], marker='o', linestyle='', color='red', label='Participantes')
 ])
 
+ax.set_aspect("equal")
+ax.set_xlim(-R_b - 3, R_b + 3)
+ax.set_ylim(-R_b - 3, R_b + 3)
+
 def animate(frame):
-    update(positions, velocities, types, gamma_particles, V0_particles, sigma_f, K, d0, alpha, beta, R_a, lambda_align, dt)
+    update(positions, R_b, k_w, velocities, types, gamma_particles, V0_particles, sigma_f, K, d0, alpha, beta, R_a, lambda_align, dt)
+    rotational_history.append(rotational_order(positions, velocities, types))
 
     scatter.set_offsets(positions)
 
-    return scatter,
+    return scatter
+
+def initialize(seed):
+    rng = np.random.default_rng(seed)
+
+    N_P = round(p * N)
+    indices = rng.choice(N, size=N_P, replace=False)
+
+    types = np.zeros(N, dtype=int)
+    types[indices] = 1
+
+    K = np.array([k_EE, k_PE, k_PP])[
+        types[:, None] + types[None, :]
+    ]
+
+    V0_particles = np.array([V0_E, V0_P])[types]
+    gamma_particles = np.array([gamma_E, gamma_P])[types]
+
+    u = rng.random(N)
+    theta = rng.uniform(0, 2*np.pi, N)
+    r = R_b * np.sqrt(u)
+
+    positions = r[:, None] * np.column_stack((
+        np.cos(theta), np.sin(theta)
+    ))
+
+    velocities = rng.normal(0, sigma_v, size=(N, 2))
+
+    return positions, velocities, types, K, V0_particles, gamma_particles
+
+t_final = 100.0
+n_steps = round(t_final / dt)
+
+times = np.arange(n_steps + 1) * dt
+
+fig, ax = plt.subplots()
+
+for seed in range(5):
+    positions, velocities, types, K, V0_particles, gamma_particles = initialize(seed)
+
+    history = [rotational_order(positions, velocities, types)]
+
+    for step in range(n_steps):
+        update(
+            positions, R_b, k_w, velocities, types,
+            gamma_particles, V0_particles, sigma_f,
+            K, d0, alpha, beta, R_a, lambda_align, dt
+        )
+
+        history.append(rotational_order(positions, velocities, types))
+
+    ax.plot(times, history, label=f"Semilla {seed}")
+
+ax.axhline(0, color="gray", linestyle="--")
+ax.set_xlabel("Tiempo de simulación")
+ax.set_ylabel("Orden rotacional Φ")
+ax.set_title("Orden rotacional — 5 simulaciones")
+ax.set_ylim(-1, 1)
+ax.legend()
+ax.grid(True)
+
+plt.show()
 
 animation = FuncAnimation(
     fig,
     animate,
-    frames=500,
+    frames=n_steps,
     interval=60,
-    blit=True
+    blit=True,
+    repeat=False
 )
 
 plt.show()
-
