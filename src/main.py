@@ -16,7 +16,7 @@ gamma_E = 2.0
 k_EE=8
 k_PE=5
 k_PP=3
-sigma_f=3
+sigma_f = 8
 d0 = 0.5
 alpha=1.0
 beta=0.5
@@ -26,27 +26,47 @@ dt = 0.05
 t_final = 100.0
 n_steps = round(t_final / dt)
 
-rng = np.random.default_rng()
+def participant_potential(t):
+    if t < 50:
+        return 10.0
+    elif t < 70:
+        return -10.0
+    else:
+        return 10.0
 
-N_P = round(p * N)
-indices = rng.choice(N, size=N_P, replace=False)
-types = np.zeros(N, dtype=int)
-types[indices] = 1
-mask_types = types[:, None] + types [None, :]
+def alignment_strength(t):
+    if 50 <= t < 70:
+        return 0.0
+    return lambda_align
 
-k_values = np.array([k_EE, k_PE, k_PP])
-K = k_values[mask_types]
+def initialize(seed=None):
+    rng = np.random.default_rng(seed)
 
-V0_values = np.array([V0_E, V0_P])
-V0_particles = V0_values[types]
+    N_P = round(p * N)
+    indices = rng.choice(N, size=N_P, replace=False)
 
-gamma_particles = np.array([gamma_E, gamma_P])[types]
+    types = np.zeros(N, dtype=int)
+    types[indices] = 1
 
-u = rng.random(N)
-theta = rng.uniform(0, 2*np.pi, N)
-r = R_b * np.sqrt(u)
-positions = r[:,None]*np.column_stack((np.cos(theta),np.sin(theta)))
-velocities = rng.normal(0, sigma_v, size=(N, 2))
+    K = np.array([k_EE, k_PE, k_PP])[
+        types[:, None] + types[None, :]
+    ]
+
+    V0_particles = np.array([V0_E, V0_P], dtype=float)[types]
+    gamma_particles = np.array([gamma_E, gamma_P])[types]
+
+    u = rng.random(N)
+    theta = rng.uniform(0, 2*np.pi, N)
+    r = R_b * np.sqrt(u)
+
+    positions = r[:, None] * np.column_stack((
+        np.cos(theta), np.sin(theta)
+    ))
+
+    velocities = rng.normal(0, sigma_v, size=(N, 2))
+
+    return positions, velocities, types, K, V0_particles, gamma_particles
+
 
 def wall_force(positions, R_b, k_w):
     r = np.linalg.norm(positions, axis=1)
@@ -131,105 +151,191 @@ def rotational_order(positions, velocities, types):
     rot_ord = np.mean(phi)
     return rot_ord
 
-rotational_history = []
+def radial_movement(positions, velocities, types):
+    mask = types == 1
+    positions_P = positions[mask]
+    velocities_P = velocities[mask]
+    esc_prod = (
+    positions_P[:, 0] * velocities_P[:, 0]
+    + positions_P[:, 1] * velocities_P[:, 1])
+    r = np.linalg.norm(positions_P, axis=1)
+    v = np.linalg.norm(velocities_P, axis=1)
+    denominator = r * v
+    psi = np.zeros_like(denominator)
+    np.divide(esc_prod, denominator, out=psi, where=denominator > 0)
+    rad_mov = np.mean(psi)
+    return rad_mov
 
 
-fig, ax = plt.subplots()
+def radial_analysis(positions, types):
+    r = np.linalg.norm(positions, axis=1)
+    mask_p = types == 1
+    r_p = r[mask_p]
+    mask_e = types == 0
+    r_e = r[mask_e]
+    mean_r_P = np.mean(r_p)
+    mean_r_E = np.mean(r_e)
+    return mean_r_P, mean_r_E
 
-scatter = ax.scatter(
-    positions[:, 0],
-    positions[:, 1],
-    c=types,
-    cmap="coolwarm",
-    vmin=0,
-    vmax=1
-)
 
-ax.legend(handles=[
-    Line2D([], [], marker='o', linestyle='', color='blue', label='Espectadores'),
-    Line2D([], [], marker='o', linestyle='', color='red', label='Participantes')
-])
+def run_analysis(seeds=range(5), time_dependent_potential=False):
+    """Por defecto reproduce el análisis original con V0_P constante.
 
-ax.set_aspect("equal")
-ax.set_xlim(-R_b - 3, R_b + 3)
-ax.set_ylim(-R_b - 3, R_b + 3)
+    Usa time_dependent_potential=True para aplicar el mismo protocolo temporal
+    que en la animación. El potencial se evalúa al inicio de cada paso.
+    """
+    seeds = tuple(seeds)
+    times = np.arange(n_steps + 1) * dt
+    fig, ax = plt.subplots()
+    fig_radial, ax_radial = plt.subplots()
+    fig_movement, ax_movement = plt.subplots()
+    results = {}
 
-def animate(frame):
-    update(positions, R_b, k_w, velocities, types, gamma_particles, V0_particles, sigma_f, K, d0, alpha, beta, R_a, lambda_align, dt)
-    rotational_history.append(rotational_order(positions, velocities, types))
+    for seed in seeds:
+        positions, velocities, types, K, V0_particles, gamma_particles = initialize(seed)
+        history = [rotational_order(positions, velocities, types)]
+        mean_r_P, mean_r_E = radial_analysis(positions, types)
+        radial_P_history = [mean_r_P]
+        radial_E_history = [mean_r_E]
+        radial_movement_history = [radial_movement(positions, velocities, types)]
 
-    scatter.set_offsets(positions)
+        for step in range(n_steps):
+            t = step * dt
 
-    return scatter
+            if time_dependent_potential:
+                V0_particles[types == 1] = participant_potential(t)
 
-def initialize(seed):
-    rng = np.random.default_rng(seed)
+            update(
+                positions, R_b, k_w, velocities, types,
+                gamma_particles, V0_particles, sigma_f,
+                K, d0, alpha, beta, R_a,
+                alignment_strength(t) if time_dependent_potential else lambda_align,
+                dt
+            )
+            history.append(rotational_order(positions, velocities, types))
+            mean_r_P, mean_r_E = radial_analysis(positions, types)
+            radial_P_history.append(mean_r_P)
+            radial_E_history.append(mean_r_E)
+            radial_movement_history.append(radial_movement(positions, velocities, types))
 
-    N_P = round(p * N)
-    indices = rng.choice(N, size=N_P, replace=False)
+        results[seed] = {
+            "rotational_order": np.array(history),
+            "mean_radius_participants": np.array(radial_P_history),
+            "mean_radius_spectators": np.array(radial_E_history),
+            "radial_movement": np.array(radial_movement_history)
+        }
+        ax.plot(times, history, label=f"Semilla {seed}")
+        ax_radial.plot(times, radial_P_history, label=f"Participantes — semilla {seed}")
+        ax_radial.plot(times, radial_E_history, linestyle="--", label=f"Espectadores — semilla {seed}")
+        ax_movement.plot(times, radial_movement_history,label=f"Semilla {seed}")
 
-    types = np.zeros(N, dtype=int)
-    types[indices] = 1
+    ax.axhline(0, color="gray", linestyle="--")
+    ax.set_xlabel("Tiempo de simulación")
+    ax.set_ylabel("Orden rotacional Φ")
+    ax.set_title(f"Orden rotacional — {len(seeds)} simulaciones")
+    ax.set_ylim(-1, 1)
+    ax.legend()
+    ax.grid(True)
 
-    K = np.array([k_EE, k_PE, k_PP])[
-        types[:, None] + types[None, :]
-    ]
+    ax_radial.axhline(R_b, color="black", linestyle=":", label="R_b")
+    ax_radial.axhline(2 * R_b / 3, color="gray", linestyle=":", label="Media uniforme")
+    ax_radial.set_xlabel("Tiempo de simulación")
+    ax_radial.set_ylabel("Radio medio")
+    ax_radial.set_title("Evolución radial de participantes y espectadores")
+    ax_radial.legend()
+    ax_radial.grid(True)
 
-    V0_particles = np.array([V0_E, V0_P])[types]
-    gamma_particles = np.array([gamma_E, gamma_P])[types]
+    ax_movement.axhline(0, color="gray", linestyle="--")
+    ax_movement.axvspan(50, 70, color="orange", alpha=0.15)
 
-    u = rng.random(N)
-    theta = rng.uniform(0, 2*np.pi, N)
-    r = R_b * np.sqrt(u)
+    ax_movement.set_xlabel("Tiempo de simulación")
+    ax_movement.set_ylabel("Movimiento radial Ψ")
+    ax_movement.set_title("Movimiento radial — 5 simulaciones")
+    ax_movement.set_ylim(-1, 1)
+    ax_movement.legend()
+    ax_movement.grid(True)
+    plt.show()
 
-    positions = r[:, None] * np.column_stack((
-        np.cos(theta), np.sin(theta)
-    ))
+    return times, results
 
-    velocities = rng.normal(0, sigma_v, size=(N, 2))
 
-    return positions, velocities, types, K, V0_particles, gamma_particles
 
-t_final = 100.0
-n_steps = round(t_final / dt)
+def run_animation(seed=0):
+    """Anima una simulación independiente con V0_P dependiente del tiempo."""
 
-times = np.arange(n_steps + 1) * dt
-
-fig, ax = plt.subplots()
-
-for seed in range(5):
     positions, velocities, types, K, V0_particles, gamma_particles = initialize(seed)
 
-    history = [rotational_order(positions, velocities, types)]
+    steps_per_frame = 5
+    n_frames = (n_steps + steps_per_frame - 1) // steps_per_frame
 
-    for step in range(n_steps):
-        update(
-            positions, R_b, k_w, velocities, types,
-            gamma_particles, V0_particles, sigma_f,
-            K, d0, alpha, beta, R_a, lambda_align, dt
-        )
+    fig, ax = plt.subplots()
 
-        history.append(rotational_order(positions, velocities, types))
+    scatter = ax.scatter(
+        positions[:, 0], positions[:, 1],
+        c=types, cmap="coolwarm", vmin=0, vmax=1
+    )
 
-    ax.plot(times, history, label=f"Semilla {seed}")
+    ax.legend(handles=[
+        Line2D([], [], marker="o", linestyle="", color="blue", label="Espectadores"),
+        Line2D([], [], marker="o", linestyle="", color="red", label="Participantes"),
+    ])
 
-ax.axhline(0, color="gray", linestyle="--")
-ax.set_xlabel("Tiempo de simulación")
-ax.set_ylabel("Orden rotacional Φ")
-ax.set_title("Orden rotacional — 5 simulaciones")
-ax.set_ylim(-1, 1)
-ax.legend()
-ax.grid(True)
+    ax.set_aspect("equal")
+    ax.set_xlim(-R_b - 3, R_b + 3)
+    ax.set_ylim(-R_b - 3, R_b + 3)
 
-plt.show()
+    def init_animation():
+        scatter.set_offsets(positions)
+        return scatter,
 
-animation = FuncAnimation(
-    fig,
-    animate,
-    frames=n_steps,
-    interval=60,
-    blit=True,
-    repeat=False
-)
+    def animate(frame):
+        for i in range(steps_per_frame):
+            step = frame * steps_per_frame + i
 
-plt.show()
+            if step >= n_steps:
+                break
+
+            t = step * dt  # Tiempo físico actual
+
+            V0_particles[types == 1] = participant_potential(t)
+
+            update(
+                positions, R_b, k_w, velocities, types,
+                gamma_particles, V0_particles, sigma_f,
+                K, d0, alpha, beta, R_a, alignment_strength(t), dt
+            )
+
+        scatter.set_offsets(positions)
+        return scatter,
+
+    animation = FuncAnimation(
+        fig,
+        animate,
+        init_func=init_animation,
+        frames=n_frames,
+        interval=20,
+        blit=True,
+        repeat=False
+    )
+
+    plt.show()
+    return animation
+
+steps_per_frame = 5
+n_frames = n_steps // steps_per_frame
+
+
+def main():
+    experiment = "analysis"  # Elige "animation" o "analysis".
+    if experiment == "animation":
+        return run_animation(seed=0)
+    if experiment == "analysis":
+        return run_analysis(time_dependent_potential=True)
+    raise ValueError(f"Experimento desconocido: {experiment!r}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
