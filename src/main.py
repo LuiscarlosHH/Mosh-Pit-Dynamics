@@ -27,12 +27,10 @@ t_final = 100.0
 n_steps = round(t_final / dt)
 
 def participant_potential(t):
-    if t < 50:
-        return 10.0
-    elif t < 70:
-        return -10.0
-    else:
-        return 10.0
+    return np.where(
+        t < 50, V0_P,
+        np.where(t < 70, -10.0, V0_P)
+    )
 
 def alignment_strength(t):
     if 50 <= t < 70:
@@ -65,7 +63,13 @@ def initialize(seed=None):
 
     velocities = rng.normal(0, sigma_v, size=(N, 2))
 
-    return positions, velocities, types, K, V0_particles, gamma_particles
+    delays = np.zeros(N)
+    delays[types == 1] = rng.uniform(0, 5, size=np.sum(types == 1))
+
+    coefficients = np.ones(N)
+    coefficients[types == 1] = rng.uniform(0.7, 1.3, size=np.sum(types == 1))
+
+    return positions, velocities, types, K, V0_particles, gamma_particles, delays, coefficients
 
 
 def wall_force(positions, R_b, k_w):
@@ -177,6 +181,21 @@ def radial_analysis(positions, types):
     mean_r_E = np.mean(r_e)
     return mean_r_P, mean_r_E
 
+def absolute_radial_movement(positions, velocities, types):
+    mask = types == 1
+    positions_P = positions[mask]
+    velocities_P = velocities[mask]
+    esc_prod = (
+    positions_P[:, 0] * velocities_P[:, 0]
+    + positions_P[:, 1] * velocities_P[:, 1])
+    r = np.linalg.norm(positions_P, axis=1)
+    v = np.linalg.norm(velocities_P, axis=1)
+    denominator = r * v
+    psi = np.zeros_like(denominator)
+    np.divide(esc_prod, denominator, out=psi, where=denominator > 0)
+    abs_rad_mov = np.mean(np.abs(psi))
+    return abs_rad_mov
+
 
 def run_analysis(seeds=range(5), time_dependent_potential=False):
     """Por defecto reproduce el análisis original con V0_P constante.
@@ -189,21 +208,32 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
     fig, ax = plt.subplots()
     fig_radial, ax_radial = plt.subplots()
     fig_movement, ax_movement = plt.subplots()
+    fig_abs_movement, ax_abs_movement = plt.subplots()
     results = {}
 
     for seed in seeds:
-        positions, velocities, types, K, V0_particles, gamma_particles = initialize(seed)
+        positions, velocities, types, K, V0_particles, gamma_particles, delays, coefficients = initialize(seed)
         history = [rotational_order(positions, velocities, types)]
         mean_r_P, mean_r_E = radial_analysis(positions, types)
         radial_P_history = [mean_r_P]
         radial_E_history = [mean_r_E]
         radial_movement_history = [radial_movement(positions, velocities, types)]
+        absolute_radial_movement_history = [absolute_radial_movement(positions,velocities,types)]
 
         for step in range(n_steps):
             t = step * dt
 
             if time_dependent_potential:
-                V0_particles[types == 1] = participant_potential(t)
+                mask = types == 1
+
+                individual_times = t - delays[mask]
+                potential = participant_potential(individual_times)
+
+                V0_particles[mask] = np.where(
+                    potential < 0,
+                    coefficients[mask] * potential,
+                    potential
+)
 
             update(
                 positions, R_b, k_w, velocities, types,
@@ -217,17 +247,20 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
             radial_P_history.append(mean_r_P)
             radial_E_history.append(mean_r_E)
             radial_movement_history.append(radial_movement(positions, velocities, types))
+            absolute_radial_movement_history.append(absolute_radial_movement(positions, velocities, types))
 
         results[seed] = {
             "rotational_order": np.array(history),
             "mean_radius_participants": np.array(radial_P_history),
             "mean_radius_spectators": np.array(radial_E_history),
-            "radial_movement": np.array(radial_movement_history)
+            "radial_movement": np.array(radial_movement_history),
+            "absolute_radial_movement": np.array(absolute_radial_movement_history)
         }
         ax.plot(times, history, label=f"Semilla {seed}")
         ax_radial.plot(times, radial_P_history, label=f"Participantes — semilla {seed}")
         ax_radial.plot(times, radial_E_history, linestyle="--", label=f"Espectadores — semilla {seed}")
         ax_movement.plot(times, radial_movement_history,label=f"Semilla {seed}")
+        ax_abs_movement.plot(times, absolute_radial_movement_history, label=f"Semilla {seed}")
 
     ax.axhline(0, color="gray", linestyle="--")
     ax.set_xlabel("Tiempo de simulación")
@@ -247,13 +280,21 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
 
     ax_movement.axhline(0, color="gray", linestyle="--")
     ax_movement.axvspan(50, 70, color="orange", alpha=0.15)
-
     ax_movement.set_xlabel("Tiempo de simulación")
     ax_movement.set_ylabel("Movimiento radial Ψ")
     ax_movement.set_title("Movimiento radial — 5 simulaciones")
     ax_movement.set_ylim(-1, 1)
     ax_movement.legend()
     ax_movement.grid(True)
+
+    ax_abs_movement.axhline(0, color="gray", linestyle="--")
+    ax_abs_movement.axvspan(50, 70, color="orange", alpha=0.15)
+    ax_abs_movement.set_xlabel("Tiempo de simulación")
+    ax_abs_movement.set_ylabel("Movimiento radial absoluto $A_r$")
+    ax_abs_movement.set_title("Movimiento radial absoluto — 5 simulaciones")
+    ax_abs_movement.set_ylim(0, 1)
+    ax_abs_movement.legend()
+    ax_abs_movement.grid(True)
     plt.show()
 
     return times, results
@@ -263,7 +304,7 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
 def run_animation(seed=0):
     """Anima una simulación independiente con V0_P dependiente del tiempo."""
 
-    positions, velocities, types, K, V0_particles, gamma_particles = initialize(seed)
+    positions, velocities, types, K, V0_particles, gamma_particles, delays, coefficients = initialize(seed)
 
     steps_per_frame = 5
     n_frames = (n_steps + steps_per_frame - 1) // steps_per_frame
@@ -297,7 +338,16 @@ def run_animation(seed=0):
 
             t = step * dt  # Tiempo físico actual
 
-            V0_particles[types == 1] = participant_potential(t)
+            mask = types == 1
+
+            individual_times = t - delays[mask]
+            potential = participant_potential(individual_times)
+
+            V0_particles[mask] = np.where(
+                potential < 0,
+                coefficients[mask] * potential,
+                potential
+)
 
             update(
                 positions, R_b, k_w, velocities, types,
