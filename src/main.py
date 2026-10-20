@@ -5,7 +5,7 @@ from matplotlib.lines import Line2D
 
 N=500
 p=0.7
-L=20
+R_wall = 12
 R_0=4
 sigma_v=1
 V0_E=25
@@ -20,7 +20,7 @@ d0 = 0.5
 alpha=1.0
 beta=0.5
 R_a=1.5
-lambda_align=0.2
+lambda_align=1
 dt = 0.05
 
 rng = np.random.default_rng()
@@ -39,7 +39,10 @@ V0_particles = V0_values[types]
 
 gamma_particles = np.array([gamma_E, gamma_P])[types]
 
-positions=rng.uniform(-L/2,L/2,size=(N,2))
+u = rng.random(N)
+theta = rng.uniform(0, 2*np.pi, N)
+r = R_wall * np.sqrt(u)
+positions = r[:,None]*np.column_stack((np.cos(theta),np.sin(theta)))
 velocities = rng.normal(0, sigma_v, size=(N, 2))
 
 def central_force(positions, V0_particles, sigma):
@@ -98,23 +101,16 @@ def update(positions, velocities, types, gamma_particles, V0, sigma, k, d0, alph
     accelerations2 = forces
     velocities += (accelerations+accelerations2)/2*dt
 
-    # X axis
-    mask_xp = new_positions[:, 0] >= L/2
-    mask_xn = new_positions[:, 0] <= -L/2
-
-    new_positions[mask_xp, 0] = L - new_positions[mask_xp, 0]
-    new_positions[mask_xn, 0] = -L - new_positions[mask_xn, 0]
-
-    velocities[mask_xp | mask_xn, 0] *= -1
-
-    # Y axis
-    mask_yp = new_positions[:, 1] >= L/2
-    mask_yn = new_positions[:, 1] <= -L/2
-
-    new_positions[mask_yp, 1] = L - new_positions[mask_yp, 1]
-    new_positions[mask_yn, 1] = -L - new_positions[mask_yn, 1]
-
-    velocities[mask_yp | mask_yn, 1] *= -1
+    r = np.linalg.norm(new_positions, axis=1)
+    mask_wall = r >= R_wall
+    normals = new_positions[mask_wall] / r[mask_wall, None]
+    normal_components = np.sum(
+    velocities[mask_wall] * normals,
+    axis=1)
+    velocities[mask_wall] -= 2 * normal_components[:, None] * normals
+    new_positions[mask_wall] *= (
+    (2 * R_wall - r[mask_wall]) / r[mask_wall]
+    )[:, None]
 
     update_active_velocities(positions, velocities, types, gamma_particles, alpha, beta, R_a, lambda_align, dt/2)
 
