@@ -8,13 +8,14 @@ Mosh Pit Dynamics is a Python project exploring how particle-based models can re
 
 The simulation begins with particles randomly distributed inside a square enclosure. A central repulsive potential causes particles to move away from the center, producing a low-density circular region.
 
-## Current Implementation — v0.1
+## Current Implementation
 
 - Random initial particle positions and velocities.
 - Two-dimensional motion inside a square enclosure.
 - Reflective boundary conditions.
 - Central Gaussian repulsive potential.
-- Numerical integration using the Velocity Verlet method.
+- Short-range interparticle repulsion.
+- Numerical integration using Velocity Verlet.
 - Real-time visualization with Matplotlib.
 
 ### Physical Model
