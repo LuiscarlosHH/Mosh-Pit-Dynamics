@@ -1,9 +1,40 @@
-# Python virtual environment
+# Entornos y cachés Python
 .venv/
-
-# Python cache
+venv/
+env/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
 
-# Editor settings
+# Configuración local y credenciales
+.env
+.env.*
+!.env.example
+*.pem
+*.key
 .vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Salidas generadas y datos/audio locales
+outputs/
+results/
+data/
+audio/
+*.npy
+*.npz
+*.mp4
+*.gif
+*.wav
+*.mp3
+*.flac
+*.log

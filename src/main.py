@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 
-N=200
+N=300
 p=0.7
 R_b = 12.0
 k_w = 10.0
@@ -15,13 +15,14 @@ gamma_P = 0.1
 gamma_E = 2.0
 k_EE=8
 k_PE=5
-k_PP=3
+k_PP=8
+eta = 0.025
 sigma_f = 8
 d0 = 0.5
 alpha=1.0
 beta=0.5
 R_a=1.5
-lambda_align=1
+lambda_align=0.25
 dt = 0.05
 t_final = 100.0
 n_steps = round(t_final / dt)
@@ -85,20 +86,29 @@ def central_force(positions, V0_particles, sigma):
     forces = factors[:, None] * positions
     return forces
 
-def interaction_force(positions, K, d0):
+def interaction_force(positions, K, d0, eta):
     differences = positions[:, None, :] - positions[None, :, :]
     distances = np.linalg.norm(differences, axis=2)
-    mask = (distances < d0) & (distances > 0)
-    safe_distances = np.where(mask, distances, 1.0)
-    factors = mask * K * (d0-distances)/safe_distances
-    pair_forces = factors[:, :, None] * differences
-    forces = np.sum(pair_forces,axis=1)
-    return forces
 
-def total_force(positions, R_b, k_w, V0, sigma, k, d0):
+    close = (distances < d0) & (distances > 0)
+
+    neighbors = np.sum(close, axis=1)
+
+    congestion = 1 + eta * (neighbors[:, None] + neighbors[None, :])
+    
+    overlap = np.maximum(0, d0 - distances)
+
+    safe_distances = np.where(distances > 0, distances, 1.0)
+    pair_forces = (K[:, :, None] * congestion[:, :, None] * overlap[:, :, None] * differences / safe_distances[:, :, None])
+
+    pair_forces *=close[:, :, None]
+
+    return np.sum(pair_forces, axis=1)
+
+def total_force(positions, R_b, k_w, V0, sigma, k, d0, eta):
     return (
         central_force(positions, V0, sigma)
-        + interaction_force(positions, k, d0)
+        + interaction_force(positions, k, d0, eta)
         + wall_force(positions, R_b, k_w)
     )
 
@@ -128,11 +138,11 @@ def update_active_velocities(
 
     velocities += dt * forces  
 
-def update(positions, R_b, k_w,  velocities, types, gamma_particles, V0, sigma, k, d0, alpha, beta, R_a, lambda_align, dt):
+def update(positions, R_b, k_w,  velocities, types, gamma_particles, V0, sigma, k, d0, eta, alpha, beta, R_a, lambda_align, dt):
     update_active_velocities(positions, velocities, types, gamma_particles, alpha, beta, R_a, lambda_align, dt/2)
-    accelerations = total_force(positions, R_b, k_w, V0,sigma,k,d0)
+    accelerations = total_force(positions, R_b, k_w, V0,sigma,k,d0, eta)
     new_positions = positions + velocities * dt + accelerations/2*dt**2
-    forces = total_force(new_positions, R_b, k_w, V0,sigma,k,d0)
+    forces = total_force(new_positions, R_b, k_w, V0,sigma,k,d0, eta)
     accelerations2 = forces
     velocities += (accelerations+accelerations2)/2*dt
 
@@ -196,6 +206,20 @@ def absolute_radial_movement(positions, velocities, types):
     abs_rad_mov = np.mean(np.abs(psi))
     return abs_rad_mov
 
+def close_encounters(positions, types, d0):
+    positions_P = positions[types == 1]
+
+    differences = (
+        positions_P[:, None, :]
+        - positions_P[None, :, :]
+    )
+
+    distances = np.linalg.norm(differences, axis=2)
+
+    close_pairs = np.triu((distances < d0) & (distances > 0), k=1)
+
+    return np.count_nonzero(close_pairs)
+
 
 def run_analysis(seeds=range(5), time_dependent_potential=False):
     """Por defecto reproduce el análisis original con V0_P constante.
@@ -209,6 +233,7 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
     fig_radial, ax_radial = plt.subplots()
     fig_movement, ax_movement = plt.subplots()
     fig_abs_movement, ax_abs_movement = plt.subplots()
+    fig_cl_enc, ax_cl_enc = plt.subplots()
     results = {}
 
     for seed in seeds:
@@ -219,6 +244,7 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
         radial_E_history = [mean_r_E]
         radial_movement_history = [radial_movement(positions, velocities, types)]
         absolute_radial_movement_history = [absolute_radial_movement(positions,velocities,types)]
+        close_encounters_history = [close_encounters(positions, types, d0)]
 
         for step in range(n_steps):
             t = step * dt
@@ -238,7 +264,7 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
             update(
                 positions, R_b, k_w, velocities, types,
                 gamma_particles, V0_particles, sigma_f,
-                K, d0, alpha, beta, R_a,
+                K, d0, eta, alpha, beta, R_a,
                 alignment_strength(t) if time_dependent_potential else lambda_align,
                 dt
             )
@@ -248,19 +274,22 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
             radial_E_history.append(mean_r_E)
             radial_movement_history.append(radial_movement(positions, velocities, types))
             absolute_radial_movement_history.append(absolute_radial_movement(positions, velocities, types))
+            close_encounters_history.append(close_encounters(positions,types,d0))
 
         results[seed] = {
             "rotational_order": np.array(history),
             "mean_radius_participants": np.array(radial_P_history),
             "mean_radius_spectators": np.array(radial_E_history),
             "radial_movement": np.array(radial_movement_history),
-            "absolute_radial_movement": np.array(absolute_radial_movement_history)
+            "absolute_radial_movement": np.array(absolute_radial_movement_history),
+            "close_encounters": np.array(close_encounters_history)
         }
         ax.plot(times, history, label=f"Semilla {seed}")
         ax_radial.plot(times, radial_P_history, label=f"Participantes — semilla {seed}")
         ax_radial.plot(times, radial_E_history, linestyle="--", label=f"Espectadores — semilla {seed}")
         ax_movement.plot(times, radial_movement_history,label=f"Semilla {seed}")
         ax_abs_movement.plot(times, absolute_radial_movement_history, label=f"Semilla {seed}")
+        ax_cl_enc.plot(times, close_encounters_history, label=f"Semilla {seed}")
 
     ax.axhline(0, color="gray", linestyle="--")
     ax.set_xlabel("Tiempo de simulación")
@@ -295,6 +324,15 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
     ax_abs_movement.set_ylim(0, 1)
     ax_abs_movement.legend()
     ax_abs_movement.grid(True)
+
+    ax_cl_enc.axhline(0, color="gray", linestyle="--")
+    ax_cl_enc.axvspan(50, 70, color="orange", alpha=0.15)
+    ax_cl_enc.set_xlabel("Tiempo de simulación")
+    ax_cl_enc.set_ylabel("Encuentros Cercanos $C_PP$")
+    ax_cl_enc.set_title("Encuentros Cercanos — 5 simulaciones")
+    ax_cl_enc.legend()
+    ax_cl_enc.grid(True)
+
     plt.show()
 
     return times, results
@@ -352,7 +390,7 @@ def run_animation(seed=0):
             update(
                 positions, R_b, k_w, velocities, types,
                 gamma_particles, V0_particles, sigma_f,
-                K, d0, alpha, beta, R_a, alignment_strength(t), dt
+                K, d0, eta, alpha, beta, R_a, alignment_strength(t), dt
             )
 
         scatter.set_offsets(positions)
@@ -374,15 +412,13 @@ def run_animation(seed=0):
 steps_per_frame = 5
 n_frames = n_steps // steps_per_frame
 
-
 def main():
-    experiment = "analysis"  # Elige "animation" o "analysis".
+    experiment = "animation"  # Elige "animation" o "analysis".
     if experiment == "animation":
         return run_animation(seed=0)
     if experiment == "analysis":
         return run_analysis(time_dependent_potential=True)
     raise ValueError(f"Experimento desconocido: {experiment!r}")
-
 
 if __name__ == "__main__":
     main()
