@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 
-N=300
-p=0.7
+N=200
+p=0.6
 R_b = 12.0
 k_w = 10.0
 R_0=4
@@ -40,7 +40,6 @@ def alignment_strength(t):
 
 def initialize(seed=None):
     rng = np.random.default_rng(seed)
-
     N_P = round(p * N)
     indices = rng.choice(N, size=N_P, replace=False)
 
@@ -64,13 +63,61 @@ def initialize(seed=None):
 
     velocities = rng.normal(0, sigma_v, size=(N, 2))
 
-    delays = np.zeros(N)
-    delays[types == 1] = rng.uniform(0, 5, size=np.sum(types == 1))
-
-    coefficients = np.ones(N)
-    coefficients[types == 1] = rng.uniform(0.7, 1.3, size=np.sum(types == 1))
+    delays = rng.uniform(0, 5, size=N)
+    coefficients = rng.uniform(0.7, 1.3, size=N)
 
     return positions, velocities, types, K, V0_particles, gamma_particles, delays, coefficients
+
+def interaction_matrix(types, k_EE, k_PE, k_PP):
+    participants = types == 1
+
+    both_participants = (
+        participants[:, None] & participants[None, :]
+    )
+
+    both_spectators = (
+        ~participants[:, None] & ~participants[None, :]
+    )
+
+    K = np.full((len(types), len(types)), k_PE)
+
+    K[both_participants] = k_PP
+    K[both_spectators] = k_EE
+
+    return K
+
+def update_types(types, dt, t, rng):
+    # Tasas según el estado del pogo
+
+    if 50 <= t < 70:
+        j_EP = 0.010
+        j_PE = 0
+    elif 70 <= t < 80:
+        j_PE = 0.020
+        j_EP = 0
+    else:
+        j_EP = 0.003
+        j_PE = 0
+
+    # Probabilidades por paso temporal
+    p_EP = 1 - np.exp(-j_EP * dt)
+    p_PE = 1 - np.exp(-j_PE * dt)
+
+    # Estado de cada partícula antes de actualizar
+    spectators = types == 0
+    participants = types == 1
+
+    random_values = rng.random(len(types))
+
+    # Determinar transiciones
+    enter = spectators & (random_values < p_EP)
+    leave = participants & (random_values < p_PE)
+
+    new_types = types.copy()
+    new_types[enter] = 1
+    new_types[leave] = 0
+
+    return new_types
 
 
 def wall_force(positions, R_b, k_w):
@@ -94,7 +141,7 @@ def interaction_force(positions, K, d0, eta):
 
     neighbors = np.sum(close, axis=1)
 
-    congestion = 1 + eta * (neighbors[:, None] + neighbors[None, :])
+    congestion = 1 + eta * (neighbors[:, None] + neighbors[None, :])/2
     
     overlap = np.maximum(0, d0 - distances)
 
@@ -234,10 +281,13 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
     fig_movement, ax_movement = plt.subplots()
     fig_abs_movement, ax_abs_movement = plt.subplots()
     fig_cl_enc, ax_cl_enc = plt.subplots()
+    fig_part, ax_part = plt.subplots()
     results = {}
 
     for seed in seeds:
         positions, velocities, types, K, V0_particles, gamma_particles, delays, coefficients = initialize(seed)
+        rng_transitions = np.random.default_rng(seed + 10000)
+
         history = [rotational_order(positions, velocities, types)]
         mean_r_P, mean_r_E = radial_analysis(positions, types)
         radial_P_history = [mean_r_P]
@@ -245,11 +295,20 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
         radial_movement_history = [radial_movement(positions, velocities, types)]
         absolute_radial_movement_history = [absolute_radial_movement(positions,velocities,types)]
         close_encounters_history = [close_encounters(positions, types, d0)]
+        participation_history = [np.mean(types)]
 
         for step in range(n_steps):
             t = step * dt
 
             if time_dependent_potential:
+
+                types = update_types(types, dt, t, rng_transitions)
+
+                K = interaction_matrix(types, k_EE, k_PE, k_PP)
+
+                gamma_particles = np.array([gamma_E, gamma_P])[types]
+                V0_particles = np.array([V0_E, V0_P], dtype=float)[types]
+
                 mask = types == 1
 
                 individual_times = t - delays[mask]
@@ -275,6 +334,7 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
             radial_movement_history.append(radial_movement(positions, velocities, types))
             absolute_radial_movement_history.append(absolute_radial_movement(positions, velocities, types))
             close_encounters_history.append(close_encounters(positions,types,d0))
+            participation_history.append(np.mean(types))
 
         results[seed] = {
             "rotational_order": np.array(history),
@@ -282,7 +342,8 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
             "mean_radius_spectators": np.array(radial_E_history),
             "radial_movement": np.array(radial_movement_history),
             "absolute_radial_movement": np.array(absolute_radial_movement_history),
-            "close_encounters": np.array(close_encounters_history)
+            "close_encounters": np.array(close_encounters_history),
+            "participation": np.array(participation_history)
         }
         ax.plot(times, history, label=f"Semilla {seed}")
         ax_radial.plot(times, radial_P_history, label=f"Participantes — semilla {seed}")
@@ -290,6 +351,7 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
         ax_movement.plot(times, radial_movement_history,label=f"Semilla {seed}")
         ax_abs_movement.plot(times, absolute_radial_movement_history, label=f"Semilla {seed}")
         ax_cl_enc.plot(times, close_encounters_history, label=f"Semilla {seed}")
+        ax_part.plot(times, participation_history, label=f"Semilla {seed}")
 
     ax.axhline(0, color="gray", linestyle="--")
     ax.set_xlabel("Tiempo de simulación")
@@ -333,6 +395,18 @@ def run_analysis(seeds=range(5), time_dependent_potential=False):
     ax_cl_enc.legend()
     ax_cl_enc.grid(True)
 
+    ax_part.axvspan(50, 70, color="orange", alpha=0.15, label="Pogo")
+    ax_part.axvspan(70, 80, color="gray", alpha=0.15, label="Retirada")
+
+    ax_part.axhline(p, color="black", linestyle="--", label="Participación inicial")
+
+    ax_part.set_xlabel("Tiempo de simulación")
+    ax_part.set_ylabel("Fracción de participantes p(t)")
+    ax_part.set_title("Evolución de la participación")
+    ax_part.set_ylim(0, 1)
+    ax_part.legend()
+    ax_part.grid(True)
+
     plt.show()
 
     return times, results
@@ -343,6 +417,8 @@ def run_animation(seed=0):
     """Anima una simulación independiente con V0_P dependiente del tiempo."""
 
     positions, velocities, types, K, V0_particles, gamma_particles, delays, coefficients = initialize(seed)
+    rng_transitions = np.random.default_rng(seed + 10000)
+
 
     steps_per_frame = 5
     n_frames = (n_steps + steps_per_frame - 1) // steps_per_frame
@@ -365,9 +441,11 @@ def run_animation(seed=0):
 
     def init_animation():
         scatter.set_offsets(positions)
+        scatter.set_array(types)
         return scatter,
 
     def animate(frame):
+        nonlocal types, K, gamma_particles, V0_particles
         for i in range(steps_per_frame):
             step = frame * steps_per_frame + i
 
@@ -375,6 +453,13 @@ def run_animation(seed=0):
                 break
 
             t = step * dt  # Tiempo físico actual
+
+            types = update_types(types, dt, t, rng_transitions)
+
+            K = interaction_matrix(types, k_EE, k_PE, k_PP)
+
+            gamma_particles = np.array([gamma_E, gamma_P])[types]
+            V0_particles = np.array([V0_E, V0_P], dtype=float)[types]
 
             mask = types == 1
 
@@ -394,6 +479,7 @@ def run_animation(seed=0):
             )
 
         scatter.set_offsets(positions)
+        scatter.set_array(types)
         return scatter,
 
     animation = FuncAnimation(
